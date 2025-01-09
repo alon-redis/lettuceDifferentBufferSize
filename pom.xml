@@ -14,13 +14,18 @@
         <lettuce.version>6.2.6.RELEASE</lettuce.version>
     </properties>
 
-    <dependencies>
-        <dependency>
-            <groupId>io.lettuce</groupId>
-            <artifactId>lettuce-core</artifactId>
-            <version>${lettuce.version}</version>
-        </dependency>
-    </dependencies>
+<dependencies>
+    <dependency>
+        <groupId>io.lettuce</groupId>
+        <artifactId>lettuce-core</artifactId>
+        <version>6.2.6.RELEASE</version>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-pool2</artifactId>
+        <version>2.11.1</version>
+    </dependency>
+</dependencies>
 
     <build>
         <plugins>
