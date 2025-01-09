@@ -1,8 +1,15 @@
 import io.lettuce.core.RedisClient;
+import io.lettuce.core.RedisURI;
 import io.lettuce.core.api.StatefulRedisConnection;
 import io.lettuce.core.api.sync.RedisCommands;
+import io.lettuce.core.support.ConnectionPoolSupport;
+import org.apache.commons.pool2.impl.GenericObjectPool;
+import org.apache.commons.pool2.impl.GenericObjectPoolConfig;
+
+import javax.net.ssl.*;
 import java.net.Socket;
 import java.io.OutputStream;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -13,15 +20,49 @@ public class differentBufferSize {
 
     private static final int MB_TO_BYTES = 1048576;
 
-    public static void populateData(String redisHost, int redisPort, int numConnections, int initialKeySize, int delta) {
+    // Create insecure SSL context that accepts all certificates
+    private static SSLContext createInsecureSSLContext() throws Exception {
+        TrustManager[] trustAllCerts = new TrustManager[]{
+            new X509TrustManager() {
+                public X509Certificate[] getAcceptedIssuers() {
+                    return new X509Certificate[0];
+                }
+                public void checkClientTrusted(X509Certificate[] certs, String authType) {}
+                public void checkServerTrusted(X509Certificate[] certs, String authType) {}
+            }
+        };
+
+        SSLContext sslContext = SSLContext.getInstance("TLS");
+        sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+        return sslContext;
+    }
+
+    private static RedisURI createRedisURI(String host, int port, boolean useTLS) {
+        RedisURI.Builder builder = RedisURI.builder()
+            .withHost(host)
+            .withPort(port);
+        
+        if (useTLS) {
+            builder.withSsl(true)
+                   .withVerifyPeer(false);  // Disable certificate verification
+        }
+        
+        return builder.build();
+    }
+
+    public static void populateData(String redisHost, int redisPort, int numConnections, 
+                                  int initialKeySize, int delta, boolean useTLS) {
         List<RedisClient> clients = new ArrayList<>();
         List<StatefulRedisConnection<String, String>> connections = new ArrayList<>();
         ExecutorService executor = Executors.newFixedThreadPool(numConnections);
 
         try {
+            // Create Redis URI with TLS if enabled
+            RedisURI redisURI = createRedisURI(redisHost, redisPort, useTLS);
+
             // Create separate clients and connections for each task
             for (int i = 0; i < numConnections; i++) {
-                RedisClient client = RedisClient.create("redis://" + redisHost + ":" + redisPort);
+                RedisClient client = RedisClient.create(redisURI);
                 clients.add(client);
                 StatefulRedisConnection<String, String> connection = client.connect();
                 connections.add(connection);
@@ -52,7 +93,6 @@ public class differentBufferSize {
                 });
             }
 
-            // Wait for all tasks to complete
             executor.shutdown();
             if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
                 executor.shutdownNow();
@@ -80,30 +120,56 @@ public class differentBufferSize {
         }
     }
 
-    public static void fetchDataSlowly(String redisHost, int redisPort, int numConnections, int sleepTime) {
+    public static void fetchDataSlowly(String redisHost, int redisPort, int numConnections, 
+                                     int sleepTime, boolean useTLS) {
         ExecutorService executor = Executors.newFixedThreadPool(numConnections);
 
-        for (int i = 1; i <= numConnections; i++) {
-            final int index = i;
-            executor.submit(() -> {
-                try (Socket socket = new Socket(redisHost, redisPort)) {
-                    OutputStream outputStream = socket.getOutputStream();
-                    // Properly format RESP protocol command
-                    String command = "*2\r\n$3\r\nGET\r\n$" + ("key_" + index).length() + "\r\nkey_" + index + "\r\n";
-                    outputStream.write(command.getBytes());
-                    outputStream.flush();
+        try {
+            SSLContext sslContext = useTLS ? createInsecureSSLContext() : null;
+            SSLSocketFactory sslSocketFactory = useTLS ? sslContext.getSocketFactory() : null;
 
-                    // Simulate slow response reading
-                    for (int j = 0; j < sleepTime * 10; j++) {
-                        Thread.sleep(100);
-                        System.out.println("Sleeping for key_" + index);
+            for (int i = 1; i <= numConnections; i++) {
+                final int index = i;
+                executor.submit(() -> {
+                    Socket socket = null;
+                    try {
+                        // Create either SSL or regular socket
+                        if (useTLS) {
+                            socket = sslSocketFactory.createSocket(redisHost, redisPort);
+                        } else {
+                            socket = new Socket(redisHost, redisPort);
+                        }
+
+                        OutputStream outputStream = socket.getOutputStream();
+                        // Properly format RESP protocol command
+                        String command = "*2\r\n$3\r\nGET\r\n$" + ("key_" + index).length() + 
+                                      "\r\nkey_" + index + "\r\n";
+                        outputStream.write(command.getBytes());
+                        outputStream.flush();
+
+                        // Simulate slow response reading
+                        for (int j = 0; j < sleepTime * 10; j++) {
+                            Thread.sleep(100);
+                            System.out.println("Sleeping for key_" + index);
+                        }
+
+                        System.out.println("Sent GET command for: key_" + index + 
+                                         " but reading response very slowly or not at all.");
+                    } catch (Exception e) {
+                        System.err.println("Error with connection " + index + ": " + e.getMessage());
+                    } finally {
+                        if (socket != null) {
+                            try {
+                                socket.close();
+                            } catch (Exception e) {
+                                System.err.println("Error closing socket: " + e.getMessage());
+                            }
+                        }
                     }
-
-                    System.out.println("Sent GET command for: key_" + index + " but reading response very slowly or not at all.");
-                } catch (Exception e) {
-                    System.err.println("Error with connection " + index + ": " + e.getMessage());
-                }
-            });
+                });
+            }
+        } catch (Exception e) {
+            System.err.println("Error creating SSL context: " + e.getMessage());
         }
 
         executor.shutdown();
@@ -117,9 +183,10 @@ public class differentBufferSize {
     }
 
     public static void main(String[] args) {
-        if (args.length < 7) {
-            System.out.println("Usage: java differentBufferSize <redis_host> <redis_port> <num_connections> " +
-                             "<initial_key_size_mb> <delta_mb> <sleep_time_seconds> <noflush>");
+        if (args.length < 8) {
+            System.out.println("Usage: java differentBufferSize <redis_host> <redis_port> " +
+                             "<num_connections> <initial_key_size_mb> <delta_mb> " +
+                             "<sleep_time_seconds> <noflush> <use_tls>");
             System.exit(1);
         }
 
@@ -130,9 +197,11 @@ public class differentBufferSize {
         int delta = Integer.parseInt(args[4]);
         int sleepTime = Integer.parseInt(args[5]);
         boolean noflush = Boolean.parseBoolean(args[6]);
+        boolean useTLS = Boolean.parseBoolean(args[7]);
 
         if (!noflush) {
-            RedisClient client = RedisClient.create("redis://" + redisHost + ":" + redisPort);
+            RedisURI redisURI = createRedisURI(redisHost, redisPort, useTLS);
+            RedisClient client = RedisClient.create(redisURI);
             try (StatefulRedisConnection<String, String> connection = client.connect()) {
                 RedisCommands<String, String> syncCommands = connection.sync();
                 syncCommands.flushall();
@@ -143,9 +212,9 @@ public class differentBufferSize {
         }
 
         System.out.println("Starting population stage...");
-        populateData(redisHost, redisPort, numConnections, initialKeySize, delta);
+        populateData(redisHost, redisPort, numConnections, initialKeySize, delta, useTLS);
 
         System.out.println("Starting fetch stage...");
-        fetchDataSlowly(redisHost, redisPort, numConnections, sleepTime);
+        fetchDataSlowly(redisHost, redisPort, numConnections, sleepTime, useTLS);
     }
 }
