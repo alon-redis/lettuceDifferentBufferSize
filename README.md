@@ -3,7 +3,14 @@ use Lettuce redis client to create slow connections with different buffer sizes
 
 # Redis Buffer Size Test
 
-A Java tool to test Redis server behavior with different buffer sizes and slow clients.
+A Java tool to test Redis server behavior with different buffer sizes, slow clients, and TLS support.
+
+## Features
+- Multiple concurrent Redis connections
+- Configurable key sizes with linear growth
+- Slow client simulation
+- TLS support with insecure certificate handling
+- Database flush control
 
 ## Quick Start
 
@@ -11,14 +18,17 @@ A Java tool to test Redis server behavior with different buffer sizes and slow c
 # Build the project
 mvn clean package
 
-# Run the test
-java -jar target/redis-lettuce-client-1.0-SNAPSHOT-jar-with-dependencies.jar localhost 6379 3 1 2 5 false
+# Run without TLS
+java -jar target/redis-lettuce-client-1.0-SNAPSHOT-jar-with-dependencies.jar localhost 6379 3 1 2 5 false false
+
+# Run with TLS
+java -jar target/redis-lettuce-client-1.0-SNAPSHOT-jar-with-dependencies.jar localhost 6379 3 1 2 5 false true
 ```
 
 ## Parameters
 
 ```
-java -jar <jar-file> <redis-host> <redis-port> <num-connections> <initial-size> <delta> <sleep-time> <noflush>
+java -jar <jar-file> <redis-host> <redis-port> <num-connections> <initial-size> <delta> <sleep-time> <noflush> <use-tls>
 ```
 
 Example explained:
@@ -29,11 +39,23 @@ Example explained:
 - `2`: Increase each next key by 2MB
 - `5`: Sleep 5 seconds while fetching
 - `false`: Flush DB before starting
+- `true/false`: Enable/disable TLS
 
 This will create:
 - Key 1: 1MB
 - Key 2: 3MB (1+2)
 - Key 3: 5MB (1+2+2)
+
+## TLS Configuration
+- Uses insecure TLS (accepts all certificates)
+- No client certificate required
+- No certificate validation
+- Suitable for testing with self-signed certificates
+
+## Notes
+- For production use, implement proper certificate validation
+- TLS support works with both population and fetch stages
+- The fetch stage uses raw TLS sockets
 
 
 # Installation Guide for Redis Lettuce Client on Ubuntu 20.04
